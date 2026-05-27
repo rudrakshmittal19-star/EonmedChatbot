@@ -14,17 +14,17 @@ const ONBOARD_SYSTEM = `You are MediAssist doing friendly onboarding via chat. L
 - Keep it short and warm. Never ask for anything else.`;
 
 export default function Home() {
-  const [theme, setTheme]             = useState<Theme>("light");
-  const [sidebarOpen, setSidebar]     = useState(true);
-  const [messages, setMessages]       = useState<Message[]>([]);
-  const [chatHistory, setChatHistory] = useState<Chat[]>([]);
+  const [theme, setTheme]               = useState<Theme>("light");
+  const [sidebarOpen, setSidebar]       = useState(true);
+  const [messages, setMessages]         = useState<Message[]>([]);
+  const [chatHistory, setChatHistory]   = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [userName, setUserName]       = useState<string | null>(null);
-  const [userAge, setUserAge]         = useState<string | null>(null);
-  const [onboardStep, setOnboard]     = useState<"name"|"age"|"done">("name");
-  const [isLoading, setLoading]       = useState(false);
-  const [pendingReport, setPReport]   = useState<string | null>(null);
-  const [pendingReportName, setPRName]= useState<string | null>(null);
+  const [userName, setUserName]         = useState<string | null>(null);
+  const [userAge, setUserAge]           = useState<string | null>(null);
+  const [onboardStep, setOnboard]       = useState<"name"|"age"|"done">("name");
+  const [isLoading, setLoading]         = useState(false);
+  const [pendingReport, setPReport]     = useState<string | null>(null);
+  const [pendingReportName, setPRName]  = useState<string | null>(null);
 
   useEffect(() => { document.documentElement.setAttribute("data-theme", theme); }, [theme]);
 
@@ -53,46 +53,94 @@ export default function Home() {
     try {
       let reply = "";
       const apiMsgs = newMsgs.map(m => ({ role: m.role, content: m.content }));
+
       if (pendingReport) {
-        apiMsgs[apiMsgs.length-1].content = `Medical report text:\n\n${pendingReport}\n\nUser instruction: ${text}`;
-        setPReport(null); setPRName(null);
+        apiMsgs[apiMsgs.length - 1].content = `Medical report text:\n\n${pendingReport}\n\nUser instruction: ${text}`;
+        setPReport(null);
+        setPRName(null);
       }
+
       if (onboardStep !== "done") {
         reply = await sendMessage(apiMsgs, userName ?? undefined, userAge ?? undefined, ONBOARD_SYSTEM);
         const cm = reply.match(/\[ONBOARD_COMPLETE:name=(.+?),age=(.+?)\]/);
         const nm = reply.match(/\[HAVE_NAME:(.+?)\]/);
-        if (cm) { setUserName(cm[1].trim()); setUserAge(cm[2].trim()); setOnboard("done"); reply = reply.replace(/\[ONBOARD_COMPLETE:[^\]]+\]/, "").trim(); }
-        else if (nm) { setUserName(nm[1].trim()); setOnboard("age"); reply = reply.replace(/\[HAVE_NAME:[^\]]+\]/, "").trim(); }
+        if (cm) {
+          setUserName(cm[1].trim());
+          setUserAge(cm[2].trim());
+          setOnboard("done");
+          reply = reply.replace(/\[ONBOARD_COMPLETE:[^\]]+\]/, "").trim();
+        } else if (nm) {
+          setUserName(nm[1].trim());
+          setOnboard("age");
+          reply = reply.replace(/\[HAVE_NAME:[^\]]+\]/, "").trim();
+        } else if (userName && userAge) {
+          // AI forgot to emit tag but we already have both — move on
+          setOnboard("done");
+        }
       } else {
         reply = await sendMessage(apiMsgs, userName ?? undefined, userAge ?? undefined);
       }
+
+      // Guard against empty reply showing blank bubble
+      if (!reply || !reply.trim()) {
+        reply = userName
+          ? `Thanks ${userName}! What health concern can I help you with today?`
+          : "Got it! What health concern can I help you with today?";
+      }
+
       const aiMsg: Message = { id: generateId(), role: "assistant", content: reply, ts: formatTime(new Date()) };
       const final = [...newMsgs, aiMsg];
-      setMessages(final); saveChat(final);
-    } catch { setMessages(p => [...p, { id: generateId(), role: "assistant", content: "Sorry, something went wrong. Please try again.", ts: formatTime(new Date()) }]); }
-    finally { setLoading(false); }
+      setMessages(final);
+      saveChat(final);
+    } catch (err) {
+      console.error("Chat error:", err);
+      setMessages(p => [...p, { id: generateId(), role: "assistant", content: "Sorry, something went wrong. Please try again.", ts: formatTime(new Date()) }]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleFile = async (file: File) => {
     setLoading(true);
     try {
       const text = await uploadReport(file);
-      setPReport(text); setPRName(file.name);
+      setPReport(text);
+      setPRName(file.name);
       const uMsg: Message = { id: generateId(), role: "user", content: `📎 Attached: ${file.name}`, ts: formatTime(new Date()) };
       const aMsg: Message = { id: generateId(), role: "assistant", content: `📎 Got your report **${file.name}**!\n\nWhat would you like me to do?\n- Explain all values\n- Check what's abnormal\n- Suggest diet and lifestyle tips\n- Ask me anything`, ts: formatTime(new Date()) };
       if (onboardStep !== "done") setOnboard("done");
       const newMsgs = [...messages, uMsg, aMsg];
-      setMessages(newMsgs); saveChat(newMsgs);
-    } catch { setMessages(p => [...p, { id: generateId(), role: "assistant", content: "Could not read the file. Please try again.", ts: formatTime(new Date()) }]); }
-    finally { setLoading(false); }
+      setMessages(newMsgs);
+      saveChat(newMsgs);
+    } catch (err) {
+      console.error("File error:", err);
+      setMessages(p => [...p, { id: generateId(), role: "assistant", content: "Could not read the file. Please try again.", ts: formatTime(new Date()) }]);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const loadChat = (chat: Chat) => { setMessages(chat.messages); setActiveChatId(chat.id); if (onboardStep !== "done") setOnboard("done"); };
-  const deleteChat = (id: string) => { setChatHistory(p => p.filter(c => c.id !== id)); if (activeChatId === id) startNew(); };
+  const loadChat = (chat: Chat) => {
+    setMessages(chat.messages);
+    setActiveChatId(chat.id);
+    if (onboardStep !== "done") setOnboard("done");
+  };
+
+  const deleteChat = (id: string) => {
+    setChatHistory(p => p.filter(c => c.id !== id));
+    if (activeChatId === id) startNew();
+  };
+
   const startNew = () => {
-    setMessages([]); setActiveChatId(null); setPReport(null); setPRName(null);
-    const step = userName ? "done" : "name"; setOnboard(step);
-    const greeting = userName ? `Hi ${userName}! What would you like to talk about today?` : "Hi! 👋 I'm MediAssist, your personal AI health companion.\n\nWhat's your name?";
+    setMessages([]);
+    setActiveChatId(null);
+    setPReport(null);
+    setPRName(null);
+    const step = userName ? "done" : "name";
+    setOnboard(step);
+    const greeting = userName
+      ? `Hi ${userName}! What would you like to talk about today?`
+      : "Hi! 👋 I'm MediAssist, your personal AI health companion.\n\nWhat's your name?";
     setMessages([{ id: generateId(), role: "assistant", content: greeting, ts: formatTime(new Date()) }]);
   };
 
